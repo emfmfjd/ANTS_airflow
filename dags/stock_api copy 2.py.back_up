@@ -1,0 +1,200 @@
+import requests
+import json
+import pandas as pd
+from datetime import datetime, timedelta
+from airflow import DAG
+from airflow.operators.python import PythonOperator
+from airflow.models import Variable
+import time
+import logging
+from io import StringIO
+import boto3
+
+def read_token():
+    with open('/opt/airflow/stock_data/access_token.txt', 'r') as file:
+        # access_token = file.read().strip()
+        access_token = file.read()
+    return access_token
+
+# def pull_token(**kwargs):
+#     token = kwargs['ti'].xcom_pull(task_ids='push_task', key='access_token')
+#     return token
+
+token = read_token()
+appkey = "PSkmiLiiJIey2JULUk1OnFZaVLGdb1v65SsB"
+appsecret = "VcLVQMQ16DSf3bANTaKp7ExkU3i5uZbo225//eNnoqFZmgawLxN4xcY++W8gyukuoS4Im1YTMRVSZ21f5oQo6Pak83S1EPspOgKz9z1EH+Ye1mnIrZQA9TgBb78q/tPr13h0HKAWcZEtOJKU5KVp+HFQxBBf89PJk5vI4TUQSXLRuw2hPeg="
+
+default_args = {
+    'owner': 'airflow',
+    'depends_on_past': False,
+    'start_date': datetime(2024, 8, 8),
+    'retries': 3,
+    # 'retry_delay': timedelta(minutes=5),
+}
+session = requests.Session()
+
+# DAG 정의
+dag = DAG(
+    dag_id='stock_api_session',
+    default_args=default_args,
+    description='get stock price by api',
+    schedule_interval=None,  # 필요에 따라 변경
+    catchup=False,
+)
+
+def url_fetch(error_list, api_url, ptr_id, tr_cont, params, appendHeaders=None, postFlag=False, hashFlag=True):
+    url = "https://openapivts.koreainvestment.com:29443/uapi/domestic-stock/v1/quotations/inquire-price"
+    headers = {
+        "Content-Type": "application/json; charset=utf-8",
+        "authorization": f"Bearer {token}",
+        "appKey": appkey,
+        "appSecret": appsecret,
+        "personalSeckey": "",
+        "tr_id": ptr_id,
+        "tr_cont": tr_cont,
+        "custtype": "P",
+        "seq_no": "",
+        "mac_address": "F6-B3-01-C3-95-A",
+        "phone_num": "01071521250",
+        "ip_addr": "221.151.189.183",
+        "hashkey": "",
+        "gt_uid": ""
+    }
+
+    if appendHeaders:
+        headers.update(appendHeaders)
+
+    try:
+        if postFlag:
+            res = session.post(url, headers=headers, data=json.dumps(params))
+        else:
+            res = session.get(url, headers=headers, params=params)
+        
+        res.raise_for_status()  # Raise an exception for HTTP errors
+
+        return res.json()  # Return JSON response
+    except requests.exceptions.RequestException as e:
+        #print(f"Error: {e}")
+        error_list.append(params['FID_INPUT_ISCD'])
+        logging.error(f"Error: {e}")
+        return None
+
+def get_inquire_price(error_list, div_code="J", itm_no="", tr_cont="", FK100="", NK100="", dataframe=None):
+    url = '/uapi/domestic-stock/v1/quotations/inquire-price'
+    tr_id = "FHKST01010100"
+
+    params = {
+        "FID_COND_MRKT_DIV_CODE": div_code,
+        "FID_INPUT_ISCD": itm_no
+    }
+    res = url_fetch(error_list, url, tr_id, tr_cont, params)
+
+    if res:
+        current_data = pd.DataFrame([res['output']])
+        return current_data
+    else:
+        return None
+
+# def save_to_csv(**kwargs):
+#     ti = kwargs['ti']
+#     dataframe = ti.xcom_pull(task_ids='get_stock_data')
+
+#     if dataframe is not None:
+#         dataframe.to_csv("/opt/airflow/stock_data/test.csv", encoding="utf-8", index=False)
+#     else:
+#         logging.error("No data to save to CSV.")
+
+
+def read_id():
+    dict_dtype = {'Name': 'str', 'Code': 'str'}
+    df = pd.read_csv("/opt/airflow/stock_data/code.csv", dtype=dict_dtype)
+    stock = list(df['Code'])
+    return stock
+
+def get_price():
+    dataframes = []
+    error_list = []
+    stock = read_id()
+    for x in stock:
+        inquire_data = get_inquire_price(error_list, div_code="J", itm_no=f"{x}")
+        if inquire_data is not None:
+            dataframes.append(inquire_data)
+        time.sleep(0.2)
+
+    res_df = pd.concat(dataframes, ignore_index=True)
+    retry_df = []
+
+    # 중복된 주식 코드를 다시 시도하기 위해 에러 리스트에서 처리
+    while error_list:
+        retry_errors = error_list.copy()
+        error_list.clear()
+        for x in retry_errors:
+            inquire_data = get_inquire_price(error_list, div_code="J", itm_no=f"{x}")
+            if inquire_data is not None:
+                retry_df.append(inquire_data)
+            time.sleep(0.18)
+            
+    if retry_df:
+        res_df2 = pd.concat(retry_df, ignore_index=True)
+        final_df = pd.concat([res_df, res_df2], ignore_index=True)
+    else:
+        final_df = res_df
+
+    return final_df
+
+
+def df_to_s3(bucket_name, aws_conn_id, **kwargs):
+    ti = kwargs['ti']
+    dataframe = ti.xcom_pull(task_ids='get_stock_data')
+
+    if dataframe is not None:
+        # DataFrame을 CSV 형식으로 변환 (파일로 저장하지 않고 메모리에서 처리)
+        current_time = datetime.now().strftime('%y%m%d%H%M')
+
+        s3_key = f"test/{current_time}.csv"
+
+        stock_price = StringIO()
+        dataframe.to_csv(stock_price, index=False)
+
+        # AWS S3 연결 설정
+        session = boto3.Session(profile_name=aws_conn_id)
+        s3 = session.client('s3')
+
+        # S3에 업로드
+        s3.put_object(Bucket=bucket_name, Key=s3_key, Body=csv_buffer.getvalue())
+        logging(f"File successfully uploaded to {s3_key} in bucket {bucket_name}.")
+    else:
+        logging("No data found in XComs for task 'get_stock_data'.")
+
+
+# Fetch data task
+fetch_data = PythonOperator(
+    task_id='get_stock_data',
+    python_callable=get_price,
+    # op_kwargs={'div_code': "J", 'itm_no': "005930"},
+    dag=dag,
+)
+
+# Save to CSV task
+# save_data = PythonOperator(
+#     task_id='save_to_csv_task',
+#     python_callable=save_to_csv,
+#     provide_context=True,
+#     dag=dag,
+# )
+
+# read_id_ts = PythonOperator(
+#     task_id='read_id_ts',
+#     python_callable=read_id,
+#     dag=dag,
+# )
+
+send_to_s3 = PythonOperator(
+    task_id='send_to_s3',
+    python_callable=df_to_s3,
+    op_kwargs={'bucket_name': "antsdatalake", 'aws_conn_id': 'aws_s3_default'},
+    dag=dag,
+)
+
+# Task dependencies
+fetch_data >> send_to_s3

@@ -1,0 +1,136 @@
+import requests
+import json
+import pandas as pd
+from datetime import datetime, timedelta
+from airflow import DAG
+from airflow.operators.python import PythonOperator
+from airflow.models import Variable
+import time
+import logging
+from airflow.providers.amazon.aws.transfers.local_to_s3 import LocalFilesystemToS3Operator
+import asyncio
+import aiohttp
+
+def read_token():
+    with open('/opt/airflow/stock_data/access_token.txt', 'r') as file:
+        # access_token = file.read().strip()
+        access_token = file.read()
+    return access_token
+
+# def pull_token(**kwargs):
+#     token = kwargs['ti'].xcom_pull(task_ids='push_task', key='access_token')
+#     return token
+
+token = read_token()
+
+# 민감한 정보 처리하는 과정 필요
+# appkey = Variable.get("appkey")
+# appsecret = Variable.get("appsecret")
+
+appkey = "PSkmiLiiJIey2JULUk1OnFZaVLGdb1v65SsB"
+appsecret = "VcLVQMQ16DSf3bANTaKp7ExkU3i5uZbo225//eNnoqFZmgawLxN4xcY++W8gyukuoS4Im1YTMRVSZ21f5oQo6Pak83S1EPspOgKz9z1EH+Ye1mnIrZQA9TgBb78q/tPr13h0HKAWcZEtOJKU5KVp+HFQxBBf89PJk5vI4TUQSXLRuw2hPeg="
+token = "YOUR_ACCESS_TOKEN"
+
+default_args = {
+    'owner': 'airflow',
+    'depends_on_past': False,
+    'start_date': datetime(2024, 8, 8),
+    'retries': 3,
+}
+
+dag = DAG(
+    dag_id='async_stock_api_copy',
+    default_args=default_args,
+    description='Get stock price by API using asyncio',
+    schedule_interval=None,
+    catchup=False,
+)
+
+async def fetch(session, url, headers, params, retries=3):
+    for i in range(retries):
+        try:
+            async with session.get(url, headers=headers, params=params) as response:
+                response.raise_for_status()
+                return await response.json()
+        except aiohttp.ClientResponseError as e:
+            if e.status == 500:  # 서버 오류의 경우
+                logging.error(f"500 error encountered. Retrying ({i + 1}/{retries})...")
+                time.sleep(2 ** i)  # 백오프 전략
+            else:
+                logging.error(f"Error fetching data: {e}")
+                break
+        except Exception as e:
+            logging.error(f"Unhandled error: {e}")
+            break
+    return None
+
+async def get_inquire_price_async(itm_no, session):
+    url = "https://openapi.koreainvestment.com:9443/uapi/domestic-stock/v1/quotations/inquire-price"
+    headers = {
+        "Content-Type": "application/json; charset=utf-8",
+        "authorization": f"Bearer {token}",
+        "appKey": appkey,
+        "appSecret": appsecret,
+        "tr_id": "FHKST01010100",
+        "custtype": "P",
+        "mac_address": "F6-B3-01-C3-95-A",
+        "phone_num": "01071521250",
+        "ip_addr": "221.151.189.183",
+    }
+    params = {
+        "FID_COND_MRKT_DIV_CODE": "J",
+        "FID_INPUT_ISCD": itm_no
+    }
+    result = await fetch(session, url, headers, params)
+    if result:
+        return pd.DataFrame([result['output']])
+    else:
+        return None
+
+async def get_price_async():
+    stock = read_id()
+    async with aiohttp.ClientSession() as session:
+        tasks = [get_inquire_price_async(itm_no, session) for itm_no in stock]
+        results = await asyncio.gather(*tasks)
+    
+    dataframes = [df for df in results if df is not None]
+    
+    if dataframes:
+        final_df = pd.concat(dataframes, ignore_index=True)
+        logging.info(f"Final DataFrame created with {len(final_df)} rows")
+        return final_df
+    else:
+        logging.error("No data was retrieved.")
+        return None
+
+def get_price():
+    return asyncio.run(get_price_async())
+
+def save_to_csv(**kwargs):
+    ti = kwargs['ti']
+    dataframe = ti.xcom_pull(task_ids='get_stock_data')
+
+    if dataframe is not None:
+        dataframe.to_csv("/opt/airflow/stock_data/test.csv", encoding="utf-8", index=False)
+    else:
+        logging.error("No data to save to CSV.")
+
+def read_id():
+    dict_dtype = {'Name': 'str', 'Code': 'str'}
+    df = pd.read_csv("/opt/airflow/stock_data/code.csv", dtype=dict_dtype)
+    return list(df['Code'])
+
+fetch_data = PythonOperator(
+    task_id='get_stock_data',
+    python_callable=get_price,
+    dag=dag,
+)
+
+save_data = PythonOperator(
+    task_id='save_to_csv_task',
+    python_callable=save_to_csv,
+    provide_context=True,
+    dag=dag,
+)
+
+fetch_data >> save_data
