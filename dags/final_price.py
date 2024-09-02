@@ -1,6 +1,9 @@
+import pymysql
 import requests
 import pandas as pd
 from datetime import datetime, timedelta
+
+from sqlalchemy import create_engine
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.providers.amazon.aws.transfers.local_to_s3 import LocalFilesystemToS3Operator
@@ -11,6 +14,7 @@ import boto3
 import pendulum
 import pytz
 import os, shutil
+from io import StringIO
 
 from keys import *
 
@@ -20,6 +24,9 @@ today = datetime.now(local_tz).strftime("%Y%m%d")
 token = read_token()
 appkey = app_key()
 appsecret = app_secret()
+
+types = {'Name':'str','Code':'str'}
+code_df = pd.read_csv("/opt/airflow/stock_data/code.csv", dtype=types)
 
 default_args = {
     'owner': 'airflow',
@@ -63,7 +70,7 @@ headers = {
 
 def read_id():
     dict_dtype = {'Name': 'str', 'Code': 'str'}
-    df = pd.read_csv("/opt/airflow/stock_data/data/code.csv", dtype=dict_dtype)
+    df = pd.read_csv("/opt/airflow/stock_data/code.csv", dtype=dict_dtype)
     stock = list(df['Code'])
     return stock
 
@@ -97,6 +104,85 @@ def get_price(**kwargs):
             error_list.append(f"{x}")
 
     df.to_csv(f"/opt/airflow/stock_data/data/{today}.csv", encoding='utf-8', index=False)
+
+# def to_rds(**kwargs):
+#     today = kwargs['ti'].xcom_pull(task_ids='get_realtime_data', key='today')
+
+#     df_types = {'stck_bsop_date' : "str",
+#     'stck_clpr' : "int",
+#     'stck_oprc' : "int",
+#     'stck_hgpr' : "int",
+#     'stck_lwpr' : "int",
+#     'acml_vol' : "int",
+#     'acml_tr_pbmn' : "int",
+#     'flng_cls_code' : "int",
+#     'prtt_rate' : "float",
+#     'mod_yn' : "str",
+#     'prdy_vrss_sign' : "int",
+#     'prdy_vrss' : "int",
+#     'revl_issu_reas' : "str",
+#     'hts_avls' : "int",
+#     'prdy_vol' : "int",
+#     'stock_code' : "str"}
+
+#     # s3랑 연결 설정
+#     access = aws_access_key() # git 올릴 때를 위한 암호화 
+#     secret = aws_secret()
+    
+#     s3 = boto3.client(
+#         's3',
+#         aws_access_key_id= access, 
+#         aws_secret_access_key= secret,
+#         region_name='ap-northeast-2'
+#     )
+    
+#     bucket_name = 'antsdatalake'
+#     folder = 'once_time/' 
+    
+#     # rds와 연결
+#     user = 'ants'
+#     password = rds_password()
+#     host= end_point()
+#     port = 3306
+#     database = 'datawarehouse'
+#     engine = create_engine(f"mysql+pymysql://{user}:{password}@{host}:{port}/{database}")
+
+#     conn = pymysql.connect(host=host, user=user, passwd=password, db=database)
+
+#     s3_key = f"{today}"
+#     response = s3.get_object(Bucket=bucket_name, Key=s3_key)
+#     csv_content = response['Body'].read().decode('utf-8')
+
+#     df = pd.read_csv(StringIO(csv_content), dtype=df_types) #stock_code가 자동으로 int로 읽어와서 앞에 0이 다 사라져서 dtype 수기로 정해줌...
+
+#     df.drop(columns=['stck_oprc','acml_vol', 'stck_hgpr','stck_lwpr','acml_vol','acml_tr_pbmn','flng_cls_code','prtt_rate','mod_yn','prdy_vrss_sign','prdy_vrss','revl_issu_reas'], inplace=True)
+#     df.rename(columns={"stck_bsop_date":"date","stck_clpr":"closing_price","hts_avls":"hts_total","prdy_vol":"prev_trading"}, inplace=True)
+#     df = pd.merge(df, code_df, on = 'stock_code', how='left') #stock_code로 name 연결
+
+#     df_columns = ['stock_code', 'name', 'date', 'closing_price', 'hts_total', 'prev_trading'] # 컬럼 순서 지정
+#     upload_df = df[df_columns]
+
+#     upload_df.to_sql('once_time', index=False, if_exists="append", con=engine)
+
+#     upload_df['MA5'] = round(upload_df.groupby('stock_code')['closing_price'].transform(lambda x: x.rolling(window=5, min_periods=1).mean()),1) # 이동 평균 처리해주기
+#     upload_df['MA20'] = round(upload_df.groupby('stock_code')['closing_price'].transform(lambda x: x.rolling(window=20, min_periods=1).mean()),1)
+#     upload_df['MA60'] = round(upload_df.groupby('stock_code')['closing_price'].transform(lambda x: x.rolling(window=60, min_periods=1).mean()),1)
+#     upload_df['MA120'] = round(upload_df.groupby('stock_code')['closing_price'].transform(lambda x: x.rolling(window=120, min_periods=1).mean()),1)
+#     upload_df['date'] = pd.to_datetime(upload_df['date'], format="%Y%m%d") #date 날짜 형식으로 변경 sql로 보낼때 인식할 수 있게
+#     # 날짜 형식으로 보냈는데 왜 sql에서 datetime으로 뜨는지..sql에서 date로 변경처리
+
+# def upload_file(**kwargs):
+#     today = kwargs['ti'].xcom_pull(task_ids='get_realtime_data', key='today')
+
+#     upload = LocalFilesystemToS3Operator(
+#         task_id='upload_file',
+#         aws_conn_id='aws_s3_default',
+#         filename=f'/opt/airflow/stock_data/data/{today}.csv',
+#         dest_bucket='antsdatalake',
+#         dest_key=f'real_time/{today}.csv',
+#         replace=True 
+#     )
+#     upload.execute(context=kwargs)
 
 def upload_file(**kwargs):
 

@@ -6,9 +6,11 @@ from datetime import datetime, timedelta
 import requests
 import json
 from bs4 import BeautifulSoup
-import os
+import pytz
 
 from keys import *
+
+local_tz = pytz.timezone('Asia/Seoul')
 
 # 기본 설정
 appkey = app_key()
@@ -19,7 +21,7 @@ path = '/oauth2/tokenP'
 default_args = {
     'owner': 'airflow',
     'depends_on_past': False,
-    'start_date': datetime(2024, 8, 15),
+    'start_date': datetime(2024, 8, 15, tzinfo=local_tz),
     'email_on_failure': False,
     'email_on_retry': False,
     'retries': 1,

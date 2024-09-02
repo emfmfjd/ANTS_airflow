@@ -2,15 +2,19 @@ import pandas as pd
 from datetime import datetime, timedelta
 from airflow import DAG
 from airflow.operators.python import PythonOperator
+from airflow.providers.amazon.aws.transfers.local_to_s3 import LocalFilesystemToS3Operator
 import pandas as pd
 import os
+import pytz
 # import FinanceDataReader as fdr
-# import html5lib
+import html5lib
+
+local_tz = pytz.timezone('Asia/Seoul')
 
 default_args = {
     'owner': 'airflow',
     'depends_on_past': False,
-    'start_date': datetime(2024, 8, 8),
+    'start_date': datetime(2024, 8, 8, tzinfo=local_tz),
     'retries': 3,
     'retry_delay': timedelta(minutes=5),
 }
@@ -33,11 +37,19 @@ def get_code():
     stk_data = stk_data[['회사명', '종목코드']]
     stk_data = stk_data.rename(columns={'회사명': 'Name', '종목코드': 'Code'})
     stk_data['Code'] = stk_data['Code'].apply(lambda input: '0' * (6 - len(str(input))) + str(input))
-    return stk_data
+    stk_data.to_csv("/opt/airflow/stock_data/code.csv", encoding='utf-8', index=False)
 
-def save_csv():
-    df = get_code()
-    df.to_csv("/opt/airflow/stock_data/data/code.csv", encoding='utf-8', index=False)
+def upload_csv(**kwargs):
+
+    upload = LocalFilesystemToS3Operator(
+        task_id='upload_file',
+        aws_conn_id='aws_s3_default',
+        filename=f'/opt/airflow/stock_data/code.csv',
+        dest_bucket='antsdatalake',
+        dest_key=f'code/code.csv',
+        replace=True 
+    )
+    upload.execute(context=kwargs)
 
 
 mkdir_data = PythonOperator(
@@ -48,8 +60,14 @@ mkdir_data = PythonOperator(
 
 get_stock_code = PythonOperator(
     task_id='get_stock_code',
-    python_callable=save_csv,
+    python_callable=get_code,
     dag=dag,
 )
 
-mkdir_data >> get_stock_code
+upload_file = PythonOperator(
+    task_id='upload_file',
+    python_callable=upload_csv,
+    dag=dag,
+)
+
+mkdir_data >> get_stock_code >> upload_file

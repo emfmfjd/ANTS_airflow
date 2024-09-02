@@ -12,6 +12,7 @@ from datetime import datetime
 import pendulum
 import pytz
 from airflow.providers.amazon.aws.transfers.local_to_s3 import LocalFilesystemToS3Operator
+import sqlalchemy
 
 from keys import *
 
@@ -94,7 +95,7 @@ def get_inquire_price(error_list, div_code="J", itm_no="", tr_cont=""):
 
 def read_id():
     dict_dtype = {'Name': 'str', 'Code': 'str'}
-    df = pd.read_csv("/opt/airflow/stock_data/data/code.csv", dtype=dict_dtype)
+    df = pd.read_csv("/opt/airflow/stock_data/code.csv", dtype=dict_dtype)
     stock = list(df['Code'])
     return stock
 
