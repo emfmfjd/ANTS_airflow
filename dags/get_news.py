@@ -10,6 +10,7 @@ import requests
 import json
 from sqlalchemy import create_engine
 import logging
+import shutil
 # import FinanceDataReader as fdr
 # import html5lib
 
@@ -17,7 +18,7 @@ from keys import *
 
 local_tz = pytz.timezone('Asia/Seoul')
 # today = datetime.now(local_tz).strftime("%Y%m%d")
-today = (datetime.now(local_tz) - timedelta(days=1)).strftime("%Y%m%d")
+today = (datetime.now(local_tz) - timedelta(hours=3)).strftime("%Y%m%d%H%M")
 
 url = "https://openapi.naver.com/v1/search/news.json"
 
@@ -51,12 +52,11 @@ dag = DAG(
     dag_id='get_news',
     default_args=default_args,
     description='뉴스데이터 하루 1번',
-    schedule_interval="0 0 * * *",  # 필요에 따라 변경
+    schedule_interval="0 */3 * * *",  # 필요에 따라 변경
     catchup=False,
 )
 
 def get_data():
-
     rds_df = pd.DataFrame()
     for x in search_name:    
         param = {
@@ -67,16 +67,19 @@ def get_data():
         }
         r = requests.get(url, params=param, headers=header)
         data = r.json()['items']
+        
         with open(f"/opt/airflow/stock_data/data/{today}_{x}.json", "w", encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=4)
         df = pd.DataFrame(data)
         df['pubDate'] = pd.to_datetime(df['pubDate'], format='%a, %d %b %Y %H:%M:%S %z')
-        df = df[df['pubDate'] == f"{today}"]
+        df = df[df['pubDate'] >= f"{today}"]
         df['name'] = f"{x}"
         df.drop(columns="link", inplace=True)
         rds_df = pd.concat([rds_df,df], ignore_index=True)
         logging.info(f"{x} 완료")
+        
     rds_df = pd.merge(rds_df, name_df, on = 'name', how='left')
+    rds_df.drop_duplicates(subset=['title'], inplace=True)
     columns = ['stock_code','name','pubDate','title','description','originallink']
     rds_df = rds_df[columns]
     rds_df.to_csv(f"/opt/airflow/stock_data/data/news_{today}.csv")
@@ -94,7 +97,11 @@ def upload_file(**kwargs):
             replace=True 
         )
         upload.execute(context=kwargs)
-        logging.info(f"{x}번 업로드 완료")
+        logging.info(f"{x} 업로드 완료")
+
+def remove_dir():
+    if os.path.isdir("/opt/airflow/stock_data/data"):
+        shutil.rmtree("/opt/airflow/stock_data/data")
 
 get_news = PythonOperator(
     task_id='get_news',
@@ -109,4 +116,11 @@ upload_json = PythonOperator(
     dag=dag,
 )
 
-get_news >> upload_json
+remove_data = PythonOperator(
+    task_id='remove_data',
+    python_callable=remove_dir,
+    provide_context=True,
+    dag=dag,
+)
+
+get_news >> upload_json >> remove_data
