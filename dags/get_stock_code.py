@@ -8,6 +8,7 @@ import os
 import pytz
 # import FinanceDataReader as fdr
 import html5lib
+import shutil
 
 local_tz = pytz.timezone('Asia/Seoul')
 
@@ -27,9 +28,9 @@ dag = DAG(
     catchup=False,
 )
 
-def make_data():
-    if not os.path.isdir("/opt/airflow/stock_data/data"):
-        os.makedirs("/opt/airflow/stock_data/data/")
+# def make_data():
+#     if not os.path.isdir("/opt/airflow/stock_data/data"):
+#         os.makedirs("/opt/airflow/stock_data/data/")
 
 def get_code():
     krx_url = 'https://kind.krx.co.kr/corpgeneral/corpList.do?method=download&searchType=13'
@@ -51,12 +52,14 @@ def upload_csv(**kwargs):
     )
     upload.execute(context=kwargs)
 
+def make_dir():
+    if not os.path.exists("/opt/airflow/stock_data/data"):
+        os.makedirs("/opt/airflow/stock_data/data", exist_ok=True)
 
-mkdir_data = PythonOperator(
-    task_id='mkdir_data',
-    python_callable=make_data,
-    dag=dag,
-)
+def remove_dir():
+    if os.path.isdir("/opt/airflow/stock_data/data"):
+        shutil.rmtree("/opt/airflow/stock_data/data")
+
 
 get_stock_code = PythonOperator(
     task_id='get_stock_code',
@@ -70,4 +73,19 @@ upload_file = PythonOperator(
     dag=dag,
 )
 
-mkdir_data >> get_stock_code >> upload_file
+mkdir_data = PythonOperator(
+    task_id='mkdir_data',
+    python_callable=make_dir,
+    dag=dag,
+)
+
+remove_data = PythonOperator(
+    task_id='remove_data',
+    python_callable=remove_dir,
+    provide_context=True,
+    dag=dag,
+)
+
+
+
+remove_data >> get_stock_code >> upload_file >> mkdir_data

@@ -18,7 +18,6 @@ from keys import *
 
 local_tz = pytz.timezone('Asia/Seoul')
 # today = datetime.now(local_tz).strftime("%Y%m%d")
-today = (datetime.now(local_tz) - timedelta(hours=3)).strftime("%Y%m%d%H%M")
 
 url = "https://openapi.naver.com/v1/search/news.json"
 
@@ -56,7 +55,9 @@ dag = DAG(
     catchup=False,
 )
 
-def get_data():
+def get_data(**kwargs):
+    today = (datetime.now(local_tz) - timedelta(hours=3)).strftime("%Y%m%d%H%M")
+    kwargs['ti'].xcom_push(key="today", value=today)
     rds_df = pd.DataFrame()
     for x in search_name:    
         param = {
@@ -76,6 +77,8 @@ def get_data():
         df['name'] = f"{x}"
         df.drop(columns="link", inplace=True)
         rds_df = pd.concat([rds_df,df], ignore_index=True)
+        rds_df['title'] = rds_df['title'].str.replace('<b>', '').str.replace('</b>', '')
+        rds_df['description'] = rds_df['description'].str.replace('<b>', '').str.replace('</b>', '')
         logging.info(f"{x} 완료")
         
     rds_df = pd.merge(rds_df, name_df, on = 'name', how='left')
@@ -83,10 +86,11 @@ def get_data():
     columns = ['stock_code','name','pubDate','title','description','originallink']
     rds_df = rds_df[columns]
     rds_df.to_csv(f"/opt/airflow/stock_data/data/news_{today}.csv")
-    rds_df.to_sql('news', index=False, if_exists="append", con=engine)
+    rds_df.to_sql('news', index=False, if_exists="append", con=engine)q
 
 
 def upload_file(**kwargs):
+    today = kwargs['ti'].xcom_pull(key="today", task_ids="get_news")
     for x in search_name:
         upload = LocalFilesystemToS3Operator(
             task_id='upload_file',
@@ -98,10 +102,6 @@ def upload_file(**kwargs):
         )
         upload.execute(context=kwargs)
         logging.info(f"{x} 업로드 완료")
-
-def remove_dir():
-    if os.path.isdir("/opt/airflow/stock_data/data"):
-        shutil.rmtree("/opt/airflow/stock_data/data")
 
 get_news = PythonOperator(
     task_id='get_news',
@@ -116,11 +116,5 @@ upload_json = PythonOperator(
     dag=dag,
 )
 
-remove_data = PythonOperator(
-    task_id='remove_data',
-    python_callable=remove_dir,
-    provide_context=True,
-    dag=dag,
-)
 
-get_news >> upload_json >> remove_data
+get_news >> upload_json

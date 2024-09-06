@@ -33,8 +33,8 @@ dag = DAG(
     'daily_token',
     default_args=default_args,
     description='Retrieve an access token from Korea Investment API',
-    # schedule_interval='0 9 * * *',  # 매일 아침 9시에 실행
     schedule_interval="55 8 * * 1-5",
+    catchup=False,
 )
 
 # 토큰 발급 함수

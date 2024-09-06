@@ -51,7 +51,7 @@ engine = create_engine(f"mysql+pymysql://{user}:{password}@{host}:{port}/{databa
 def get_data(**kwargs):
     url = "https://cyberir.koscom.co.kr/cyberir/main.do?custId=koscom"
 
-    for _ in range(5):
+    for _ in range(6):
         get_time = datetime.now(local_tz).strftime("%Y%m%d%H%M%S")
         response = requests.get(url)
         xml_data = response.content.decode('utf-8')
@@ -84,7 +84,7 @@ def get_data(**kwargs):
         # DataFrame을 CSV 파일로 저장 (파일이 존재하면 추가 모드로 저장)
         df.to_csv(file_path, mode='a', index=False, header=not file_exists)
         df.to_sql('market', index=False, if_exists="append", con=engine)
-        time.sleep(10)
+        time.sleep(9.5)
 
 
 get_market = PythonOperator(

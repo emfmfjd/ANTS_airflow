@@ -21,12 +21,8 @@ from keys import *
 local_tz = pytz.timezone('Asia/Seoul')  # 예시로 서울 시간대
 today = datetime.now(local_tz).strftime("%Y%m%d")
 
-token = read_token()
-appkey = app_key()
-appsecret = app_secret()
-
 types = {'Name':'str','Code':'str'}
-code_df = pd.read_csv("/opt/airflow/stock_data/code.csv", dtype=types)
+code_df = pd.read_csv("/opt/airflow/stock_data/code.csv", dtype=types).rename(columns={"Name":"name","Code":"stock_code"})
 
 default_args = {
     'owner': 'airflow',
