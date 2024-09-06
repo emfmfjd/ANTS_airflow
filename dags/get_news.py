@@ -86,7 +86,7 @@ def get_data(**kwargs):
     columns = ['stock_code','name','pubDate','title','description','originallink']
     rds_df = rds_df[columns]
     rds_df.to_csv(f"/opt/airflow/stock_data/data/news_{today}.csv")
-    rds_df.to_sql('news', index=False, if_exists="append", con=engine)q
+    rds_df.to_sql('news', index=False, if_exists="append", con=engine)
 
 
 def upload_file(**kwargs):
