@@ -51,40 +51,38 @@ engine = create_engine(f"mysql+pymysql://{user}:{password}@{host}:{port}/{databa
 def get_data(**kwargs):
     url = "https://cyberir.koscom.co.kr/cyberir/main.do?custId=koscom"
 
-    for _ in range(6):
-        get_time = datetime.now(local_tz).strftime("%Y%m%d%H%M%S")
-        response = requests.get(url)
-        xml_data = response.content.decode('utf-8')
+    # for _ in range(6):
+    get_time = datetime.now(local_tz).strftime("%Y%m%d%H%M%S")
+    response = requests.get(url)
+    xml_data = response.content.decode('utf-8')
+    soup = BeautifulSoup(xml_data, features="xml")
+    korstocks = soup.find_all('KorStock')
 
-        soup = BeautifulSoup(xml_data, features="xml")
-        korstocks = soup.find_all('KorStock')
-        data = []
+    data = []
 
-        for korstock in korstocks:
-            stock_name = korstock.find('StockName').text
-            current_point = korstock.find('CurrentPoint').text
-            up_down_point = korstock.find('UpDownPoint').text
-            up_down_rate = korstock.find('UpDownRate').text
-            up_down_flag = korstock.find('UpDownFlag').text.strip()
+    for korstock in korstocks:
+        stock_name = korstock.find('StockName').text
+        current_point = korstock.find('CurrentPoint').text
+        up_down_point = korstock.find('UpDownPoint').text
+        up_down_rate = korstock.find('UpDownRate').text
+        up_down_flag = korstock.find('UpDownFlag').text.strip()
+        data.append({
+            'StockName': stock_name,
+            'CurrentPoint': current_point,
+            'UpDownPoint': up_down_point,
+            'UpDownRate': up_down_rate,
+            'UpDownFlag': up_down_flag
+        })
 
-            data.append({
-                'StockName': stock_name,
-                'CurrentPoint': current_point,
-                'UpDownPoint': up_down_point,
-                'UpDownRate': up_down_rate,
-                'UpDownFlag': up_down_flag
-            })
+    df = pd.DataFrame(data)
+    df['price_time'] = datetime.strptime(get_time, "%Y%m%d%H%M%S")
+    
+    file_path = f"/opt/airflow/stock_data/data/market_{today}.csv"
+    file_exists = os.path.isfile(file_path)
 
-        df = pd.DataFrame(data)
-        df['price_time'] = datetime.strptime(get_time, "%Y%m%d%H%M%S")
-        
-        file_path = f"/opt/airflow/stock_data/data/market_{today}.csv"
-        file_exists = os.path.isfile(file_path)
-
-        # DataFrame을 CSV 파일로 저장 (파일이 존재하면 추가 모드로 저장)
-        df.to_csv(file_path, mode='a', index=False, header=not file_exists)
-        df.to_sql('market', index=False, if_exists="append", con=engine)
-        time.sleep(9.5)
+    df.to_csv(file_path, mode='a', index=False, header=not file_exists)
+    df.to_sql('market', index=False, if_exists="append", con=engine)
+    # time.sleep(9.5)
 
 
 get_market = PythonOperator(

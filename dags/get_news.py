@@ -116,5 +116,4 @@ upload_json = PythonOperator(
     dag=dag,
 )
 
-
 get_news >> upload_json
