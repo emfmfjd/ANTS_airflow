@@ -36,7 +36,6 @@ dag = DAG(
     catchup=False,
 )
 
-# Python 함수 정의
 def store_and_delete_data():
     conn = pymysql.connect(host=host, user=user, passwd=password, db=database)
     
@@ -44,9 +43,21 @@ def store_and_delete_data():
     query_once_time = "SELECT * FROM `once_time` ORDER BY `date` DESC"
     latest_data = pd.read_sql(query_once_time, conn)
     
-    # Step 2: 가져온 데이터를 filtered_once_time 테이블에 저장
+    # Step 2: 가져온 데이터를 filtered_once_time 테이블에 저장 (중복된 항목이 있으면 업데이트)
     latest_data = latest_data[['stock_code', 'name', 'closing_price', 'date']]
-    latest_data.to_sql(name='filtered_once_time', con=engine, if_exists='append', index=False)
+    
+    # 중복된 항목에 대해 업데이트 처리
+    insert_query = """
+    INSERT INTO filtered_once_time (stock_code, name, closing_price, date)
+    VALUES (%s, %s, %s, %s)
+    ON DUPLICATE KEY UPDATE 
+    closing_price = VALUES(closing_price), name = VALUES(name)
+    """
+    
+    with conn.cursor() as cursor:
+        for _, row in latest_data.iterrows():
+            cursor.execute(insert_query, (row['stock_code'], row['name'], row['closing_price'], row['date']))
+        conn.commit()
 
     print(f"가장 최근 데이터를 filtered_once_time 테이블에 저장했습니다: {latest_data}")
     
