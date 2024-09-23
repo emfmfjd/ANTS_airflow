@@ -1,6 +1,6 @@
 import pymysql
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime
 from sqlalchemy import create_engine
 from airflow import DAG
 from airflow.operators.python import PythonOperator
@@ -37,43 +37,58 @@ dag = DAG(
 )
 
 def store_and_delete_data():
-    conn = pymysql.connect(host=host, user=user, passwd=password, db=database)
-    
-    # Step 1: once_time 테이블에서 가장 최근 데이터를 가져옴
-    query_once_time = "SELECT * FROM `once_time` ORDER BY `date` DESC"
-    latest_data = pd.read_sql(query_once_time, conn)
-    
-    # Step 2: 가져온 데이터를 filtered_once_time 테이블에 저장 (중복된 항목이 있으면 업데이트)
-    latest_data = latest_data[['stock_code', 'name', 'closing_price', 'date']]
-    
-    # 중복된 항목에 대해 업데이트 처리
-    insert_query = """
-    INSERT INTO filtered_once_time (stock_code, name, closing_price, date)
-    VALUES (%s, %s, %s, %s)
-    ON DUPLICATE KEY UPDATE 
-    closing_price = VALUES(closing_price), name = VALUES(name)
-    """
-    
-    with conn.cursor() as cursor:
-        for _, row in latest_data.iterrows():
-            cursor.execute(insert_query, (row['stock_code'], row['name'], row['closing_price'], row['date']))
-        conn.commit()
+    try:
+        print("MySQL 연결 시도 중...")
+        conn = pymysql.connect(host=host, user=user, passwd=password, db=database)
+        print("MySQL 연결 성공!")
 
-    print(f"가장 최근 데이터를 filtered_once_time 테이블에 저장했습니다: {latest_data}")
-    
-    # Step 3: 가장 오래된 데이터를 찾아서 삭제
-    delete_query = """
-    DELETE FROM `filtered_once_time`
-    WHERE `date` = (SELECT `date` FROM `filtered_once_time` ORDER BY `date` ASC LIMIT 1)
-    """
-    
-    with conn.cursor() as cursor:
-        cursor.execute(delete_query)
-        conn.commit()
-    
-    conn.close()
-    print(f"가장 오래된 데이터를 삭제했습니다.")
+        with conn.cursor() as cursor:
+            # Step 1: 가장 최근 날짜를 기준으로 데이터를 삽입 또는 업데이트
+            recent_date_query = '''
+            SELECT MAX(date) FROM once_time;
+            '''
+            cursor.execute(recent_date_query)
+            recent_date = cursor.fetchone()[0]
+            print(f"가장 최근 데이터 날짜: {recent_date}")
 
+            filter_query = '''
+            INSERT INTO filtered_once_time (stock_code, name, closing_price, date)
+            SELECT stock_code, name, closing_price, date
+            FROM once_time
+            WHERE date = %s
+            ON DUPLICATE KEY UPDATE
+                closing_price = VALUES(closing_price),
+                name = VALUES(name);
+            '''
+            print(f"최근 데이터 삽입 쿼리 실행 중...\n{filter_query}")
+            cursor.execute(filter_query, (recent_date,))
+            conn.commit()
+            print(f"최근 데이터를 filtered_once_time 테이블에 삽입 또는 업데이트 완료")
+
+            # Step 2: 가장 오래된 날짜를 기준으로 데이터 삭제
+            oldest_date_query = '''
+            SELECT MIN(date) FROM filtered_once_time;
+            '''
+            cursor.execute(oldest_date_query)
+            oldest_date = cursor.fetchone()[0]
+            print(f"가장 오래된 데이터 날짜: {oldest_date}")
+
+            delete_query = '''
+            DELETE FROM filtered_once_time
+            WHERE date = %s;
+            '''
+            print(f"오래된 데이터 삭제 쿼리 실행 중...\n{delete_query}")
+            cursor.execute(delete_query, (oldest_date,))
+            conn.commit()
+            print("가장 오래된 데이터를 삭제 완료")
+
+    except Exception as e:
+        print(f"오류 발생: {e}")
+    
+    finally:
+        if conn:
+            conn.close()
+            print("MySQL 연결을 닫았습니다.")
 
 # PythonOperator로 함수 실행 정의
 store_and_delete_data_task = PythonOperator(
