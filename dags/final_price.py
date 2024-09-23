@@ -41,11 +41,6 @@ dag = DAG(
     catchup=False,
 )
 
-# def read_token():
-#     with open('../stock_data/access_token.txt', 'r') as file:
-#         access_token = file.read()
-#     return access_token
-
 token = read_token()
 appkey = app_key()
 appsecret = app_secret()
@@ -80,10 +75,11 @@ def read_id():
     return stock
 
 def get_price(**kwargs):
+    global set_rds  # 전역 변수 선언
     df = pd.DataFrame()
     code = read_id()
     for x in code:
-        time.sleep(0.06)
+        time.sleep(0.06)  # 대기 시간 조정 가능
         query = {
             "fid_cond_mrkt_div_code": "J",
             "fid_input_date_1": f"{today}",
@@ -92,104 +88,77 @@ def get_price(**kwargs):
             "fid_period_div_code": "D",
             "fid_org_adj_prc": "0",
         }
-        # GET 요청 보내기
         try:
             response = requests.get(url=f"{url_base}{path}", headers=headers, params=query)
             data = response.json()
 
-            # print(data)
             add_df = pd.DataFrame(data['output2'])
             add_df['stock_code'] = f"{x}"
             add_df['hts_avls'] = data['output1']['hts_avls']
             add_df['prdy_vol'] = data['output1']['prdy_vol']
-            df = pd.concat([add_df,df], ignore_index=True)
+            df = pd.concat([add_df, df], ignore_index=True)
 
         except Exception as e:
-            print(f"Error: {e}")
+            logging.error(f"Error fetching data for stock code {x}: {e}")
             error_list.append(f"{x}")
 
-    df.to_csv(f"/opt/airflow/stock_data/data/{today}.csv", encoding='utf-8', index=False)
-   
+    logging.info("Data fetching complete.")
 
-    df.drop(columns=['stck_oprc','acml_vol', 'stck_hgpr','stck_lwpr','acml_vol','acml_tr_pbmn','flng_cls_code','prtt_rate','mod_yn','prdy_vrss_sign','prdy_vrss','revl_issu_reas'], inplace=True)
-    df.rename(columns={"stck_bsop_date":"date","stck_clpr":"closing_price","hts_avls":"hts_total","prdy_vol":"prev_trading"}, inplace=True)
-    df = pd.merge(df, code_df, on = 'stock_code', how='left') #stock_code로 name 연결
+    if not df.empty:
+        df.to_csv(f"/opt/airflow/stock_data/data/{today}.csv", encoding='utf-8', index=False)
+        df.drop(columns=['stck_oprc', 'acml_vol', 'stck_hgpr', 'stck_lwpr', 'acml_vol', 'acml_tr_pbmn', 'flng_cls_code', 'prtt_rate', 'mod_yn', 'prdy_vrss_sign', 'prdy_vrss', 'revl_issu_reas'], inplace=True)
+        df.rename(columns={"stck_bsop_date": "date", "stck_clpr": "closing_price", "hts_avls": "hts_total", "prdy_vol": "prev_trading"}, inplace=True)
+        df = pd.merge(df, code_df, on='stock_code', how='left')
 
-    df_columns = ['stock_code', 'name', 'date', 'closing_price', 'hts_total', 'prev_trading'] # 컬럼 순서 지정
-    upload_df = df[df_columns]
+        df_columns = ['stock_code', 'name', 'date', 'closing_price', 'hts_total', 'prev_trading']
+        upload_df = df[df_columns]
 
-    upload_df.to_sql('once_time', index=False, if_exists="append", con=engine)
+        upload_df.to_sql('once_time', index=False, if_exists="append", con=engine)
+        set_rds = True  # RDS 업데이트를 위한 플래그 설정
+    else:
+        set_rds = False
 
 def to_rds():
-    select_sql = "SELECT * FROM `once_time` WHERE `date` >= CURDATE() - INTERVAL 180 DAY;"
-    rds_df = pd.read_sql(select_sql, conn)
-    rds_df['date'] = pd.to_datetime(rds_df['date'])
-    rds_df = rds_df.sort_values(by=['stock_code', 'date'])
-    print("read 완료")
+    if set_rds == True:
+        select_sql = "SELECT * FROM `once_time` WHERE `date` >= CURDATE() - INTERVAL 180 DAY;"
+        rds_df = pd.read_sql(select_sql, conn)
+        rds_df['date'] = pd.to_datetime(rds_df['date'])
+        rds_df = rds_df.sort_values(by=['stock_code', 'date'])
+        print("read 완료")
 
-    # 업데이트할 날짜
-    target_date = pd.Timestamp(f'{today}')
-    rds_df[rds_df['date'] == target_date]
+        # 업데이트할 날짜
+        target_date = pd.Timestamp(f'{today}')
+        rds_df[rds_df['date'] == target_date]
 
-    rds_df['MA5'] = rds_df.groupby('stock_code')['closing_price'].transform(lambda x: x.rolling(window=5, min_periods=1).mean()).round(1)
-    rds_df['MA20'] = rds_df.groupby('stock_code')['closing_price'].transform(lambda x: x.rolling(window=20, min_periods=1).mean()).round(1)
-    rds_df['MA60'] = rds_df.groupby('stock_code')['closing_price'].transform(lambda x: x.rolling(window=60, min_periods=1).mean()).round(1)
-    rds_df['MA120'] = rds_df.groupby('stock_code')['closing_price'].transform(lambda x: x.rolling(window=120, min_periods=1).mean()).round(1)
+        rds_df['MA5'] = rds_df.groupby('stock_code')['closing_price'].transform(lambda x: x.rolling(window=5, min_periods=1).mean()).round(1)
+        rds_df['MA20'] = rds_df.groupby('stock_code')['closing_price'].transform(lambda x: x.rolling(window=20, min_periods=1).mean()).round(1)
+        rds_df['MA60'] = rds_df.groupby('stock_code')['closing_price'].transform(lambda x: x.rolling(window=60, min_periods=1).mean()).round(1)
+        rds_df['MA120'] = rds_df.groupby('stock_code')['closing_price'].transform(lambda x: x.rolling(window=120, min_periods=1).mean()).round(1)
 
-    # 특정 날짜의 데이터만 추출
-    subset_df = rds_df[rds_df['date'] == target_date]
-    
-    # 배치 업데이트를 위한 SQL 쿼리 생성
-    update_sql = """
-        UPDATE `once_time` 
-        SET MA5 = %s, MA20 = %s, MA60 = %s, MA120 = %s
-        WHERE stock_code = %s AND `date` = %s
-    """
+        # 특정 날짜의 데이터만 추출
+        subset_df = rds_df[rds_df['date'] == target_date]
 
-    # 데이터베이스 커넥션 및 커서 오픈
-    with conn.cursor() as cursor:
-        data = [
-            (row['MA5'], row['MA20'], row['MA60'], row['MA120'], row['stock_code'], row['date']) 
-            for _, row in subset_df.iterrows()
-        ]
-        cursor.executemany(update_sql, data)
-        conn.commit()
+        # 배치 업데이트를 위한 SQL 쿼리 생성
+        update_sql = """
+            UPDATE `once_time` 
+            SET MA5 = %s, MA20 = %s, MA60 = %s, MA120 = %s
+            WHERE stock_code = %s AND `date` = %s
+        """
 
-def upload_file(**kwargs):
+        # 데이터베이스 커넥션 및 커서 오픈
+        with conn.cursor() as cursor:
+            data = [
+                (row['MA5'], row['MA20'], row['MA60'], row['MA120'], row['stock_code'], row['date']) 
+                for _, row in subset_df.iterrows()
+            ]
+            cursor.executemany(update_sql, data)
+            conn.commit()
 
-    upload = LocalFilesystemToS3Operator(
-        task_id='upload_file',
-        aws_conn_id='aws_s3_default',
-        filename=f'/opt/airflow/stock_data/data/{today}.csv',
-        dest_bucket='antsdatalake',
-        dest_key=f'once_time/{today}.csv',
-        replace=True 
-    )
-    upload.execute(context=kwargs)
-
-def upload_market_file(**kwargs):
-    upload = LocalFilesystemToS3Operator(
-        task_id='upload_file',
-        aws_conn_id='aws_s3_default',
-        filename=f'/opt/airflow/stock_data/data/market_{today}.csv',
-        dest_bucket='antsdatalake',
-        dest_key=f'market/market_{today}.csv',
-        replace=True 
-    )
-    upload.execute(context=kwargs)
 
 
 get_data = PythonOperator(
     task_id='get_final_price',
     python_callable=get_price,
-    # op_kwargs={'div_code': "J", 'itm_no': "005930"},
-    dag=dag,
-)
-
-upload_csv = PythonOperator(
-    task_id='upload_csv',
-    python_callable=upload_file,
-    provide_context=True,
     dag=dag,
 )
 
@@ -200,11 +169,4 @@ update_rds = PythonOperator(
     dag=dag,
 )
 
-upload_market = PythonOperator(
-    task_id='upload_market',
-    python_callable=upload_market_file,
-    provide_context=True,
-    dag=dag,
-)
-
-get_data >> upload_csv >> update_rds >> upload_market
+get_data >> update_rds

@@ -50,7 +50,7 @@ default_args = {
 dag = DAG(
     dag_id='get_news',
     default_args=default_args,
-    description='뉴스데이터 하루 1번',
+    description='뉴스데이터 3시간마다 1번',
     schedule_interval="0 */3 * * *",  # 필요에 따라 변경
     catchup=False,
 )
@@ -69,8 +69,8 @@ def get_data(**kwargs):
         r = requests.get(url, params=param, headers=header)
         data = r.json()['items']
         
-        with open(f"/opt/airflow/stock_data/data/{today}_{x}.json", "w", encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=4)
+        # with open(f"/opt/airflow/stock_data/data/{today}_{x}.json", "w", encoding='utf-8') as f:
+        #     json.dump(data, f, ensure_ascii=False, indent=4)
         df = pd.DataFrame(data)
         df['pubDate'] = pd.to_datetime(df['pubDate'], format='%a, %d %b %Y %H:%M:%S %z')
         df = df[df['pubDate'] >= f"{today}"]
@@ -85,23 +85,9 @@ def get_data(**kwargs):
     rds_df.drop_duplicates(subset=['title'], inplace=True)
     columns = ['stock_code','name','pubDate','title','description','originallink']
     rds_df = rds_df[columns]
-    rds_df.to_csv(f"/opt/airflow/stock_data/data/news_{today}.csv")
+    # rds_df.to_csv(f"/opt/airflow/stock_data/data/news_{today}.csv")
     rds_df.to_sql('news', index=False, if_exists="append", con=engine)
 
-
-def upload_file(**kwargs):
-    today = kwargs['ti'].xcom_pull(key="today", task_ids="get_news")
-    for x in search_name:
-        upload = LocalFilesystemToS3Operator(
-            task_id='upload_file',
-            aws_conn_id='aws_s3_default',
-            filename=f'/opt/airflow/stock_data/data/{today}_{x}.json',
-            dest_bucket='antsdatalake',
-            dest_key=f'news/{today}_{x}.json',
-            replace=True 
-        )
-        upload.execute(context=kwargs)
-        logging.info(f"{x} 업로드 완료")
 
 get_news = PythonOperator(
     task_id='get_news',
@@ -109,11 +95,5 @@ get_news = PythonOperator(
     dag=dag,
 )
 
-upload_json = PythonOperator(
-    task_id='upload_json',
-    python_callable=upload_file,
-    provide_context=True,
-    dag=dag,
-)
 
-get_news >> upload_json
+get_news

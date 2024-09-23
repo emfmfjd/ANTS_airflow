@@ -12,19 +12,25 @@ from datetime import datetime
 import pendulum
 import pytz
 from airflow.providers.amazon.aws.transfers.local_to_s3 import LocalFilesystemToS3Operator
-import sqlalchemy
+from sqlalchemy import create_engine
 
 from keys import *
 
-# def pull_token(**kwargs):
-#     token = kwargs['ti'].xcom_pull(task_ids='push_task', key='access_token')
-#     return token
+types = {'Name':'str','Code':'str'}
+code_df = pd.read_csv("/opt/airflow/stock_data/code.csv", dtype=types).rename(columns={"Name":'name',"Code":"stock_code"})
 
 local_tz = pytz.timezone('Asia/Seoul')  # 예시로 서울 시간대
 
 token = read_token()
 appkey = app_key()
 appsecret = app_secret()
+
+user = 'ants'
+password = rds_password()
+host= end_point()
+port = 3306
+database = 'datawarehouse'
+engine = create_engine(f"mysql+pymysql://{user}:{password}@{host}:{port}/{database}")
 
 default_args = {
     'owner': 'airflow',
@@ -38,8 +44,8 @@ default_args = {
 dag = DAG(
     dag_id='stock_api',
     default_args=default_args,
-    description='실시간 주식데이터 api 5분마다 실행',
-    schedule_interval="*/5 9-15 * * 1-5",
+    description='실시간 주식데이터 api 10분마다 실행',
+    schedule_interval="*/10 9-15 * * 1-5",
     # schedule_interval=None,
     catchup=False,
 )
@@ -127,20 +133,29 @@ def get_price(**kwargs):
     else:
         final_df = res_df
     final_df['price_time'] = f"{today}"
-    final_df.to_csv(f"/opt/airflow/stock_data/data/{today}.csv", encoding='utf-8', index=False)
-
-def upload_file(**kwargs):
-    today = kwargs['ti'].xcom_pull(task_ids='get_realtime_data', key='today')
-
-    upload = LocalFilesystemToS3Operator(
-        task_id='upload_file',
-        aws_conn_id='aws_s3_default',
-        filename=f'/opt/airflow/stock_data/data/{today}.csv',
-        dest_bucket='antsdatalake',
-        dest_key=f'real_time/{today}.csv',
-        replace=True 
-    )
-    upload.execute(context=kwargs)
+    # final_df.to_csv(f"/opt/airflow/stock_data/data/{today}.csv", encoding='utf-8', index=False)
+    final_df = pd.merge(final_df, code_df, how='left', on='stock_code')
+    final_df.rename(columns={
+        'stock_code': 'stock_code',
+        'name': 'name',
+        'bstp_kor_isnm': 'sector',
+        'rprs_mrkt_kor_name': 'market',
+        'iscd_stat_cls_code':'status_code',
+        'stck_prpr': 'current_price',
+        'prdy_vrss' : 'UpDownPoint',
+        'prdy_vrss_sign' : 'PlusMinus',
+        'prdy_ctrt' : "UpDownRate",
+        'stck_oprc': 'opening_price',
+        'stck_hgpr': 'high_price',
+        'stck_lwpr': 'low_price',
+        'price_time': 'price_time',
+        'per' : 'per',
+        'pbr' : 'pbr',
+        "lstn_stcn":"stockcount",
+    }, inplace=True)
+    changed_columns = ['stock_code', 'name', 'sector', 'market', 'status_code', 'current_price', 'UpDownPoint', 'PlusMinus', 'UpDownRate', 'opening_price', 'high_price', 'low_price', 'price_time', 'per', 'pbr', 'stockcount']
+    final_df = final_df[changed_columns]
+    final_df.to_sql('real_time', index=False, if_exists="append", con=engine)
 
 # Fetch data task
 get_data = PythonOperator(
@@ -150,12 +165,4 @@ get_data = PythonOperator(
     dag=dag,
 )
 
-upload_csv = PythonOperator(
-    task_id='upload_csv',
-    python_callable=upload_file,
-    provide_context=True,
-    dag=dag,
-)
-
-# Task dependencies
-get_data >> upload_csv
+get_data
