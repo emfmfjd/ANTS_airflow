@@ -40,18 +40,6 @@ def get_code():
     stk_data['Code'] = stk_data['Code'].apply(lambda input: '0' * (6 - len(str(input))) + str(input))
     stk_data.to_csv("/opt/airflow/stock_data/code.csv", encoding='utf-8', index=False)
 
-def upload_csv(**kwargs):
-
-    upload = LocalFilesystemToS3Operator(
-        task_id='upload_file',
-        aws_conn_id='aws_s3_default',
-        filename=f'/opt/airflow/stock_data/code.csv',
-        dest_bucket='antsdatalake',
-        dest_key=f'code/code.csv',
-        replace=True 
-    )
-    upload.execute(context=kwargs)
-
 def make_dir():
     if not os.path.exists("/opt/airflow/stock_data/data"):
         os.makedirs("/opt/airflow/stock_data/data", exist_ok=True)
@@ -64,12 +52,6 @@ def remove_dir():
 get_stock_code = PythonOperator(
     task_id='get_stock_code',
     python_callable=get_code,
-    dag=dag,
-)
-
-upload_file = PythonOperator(
-    task_id='upload_file',
-    python_callable=upload_csv,
     dag=dag,
 )
 
@@ -86,6 +68,4 @@ remove_data = PythonOperator(
     dag=dag,
 )
 
-
-
-remove_data >> get_stock_code >> upload_file >> mkdir_data
+remove_data >> get_stock_code >> mkdir_data

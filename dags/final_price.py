@@ -75,7 +75,6 @@ def read_id():
     return stock
 
 def get_price(**kwargs):
-    global set_rds  # 전역 변수 선언
     df = pd.DataFrame()
     code = read_id()
     for x in code:
@@ -114,12 +113,9 @@ def get_price(**kwargs):
         upload_df = df[df_columns]
 
         upload_df.to_sql('once_time', index=False, if_exists="append", con=engine)
-        set_rds = True  # RDS 업데이트를 위한 플래그 설정
-    else:
-        set_rds = False
 
 def to_rds():
-    if set_rds == True:
+    try:
         select_sql = "SELECT * FROM `once_time` WHERE `date` >= CURDATE() - INTERVAL 180 DAY;"
         rds_df = pd.read_sql(select_sql, conn)
         rds_df['date'] = pd.to_datetime(rds_df['date'])
@@ -129,7 +125,6 @@ def to_rds():
         # 업데이트할 날짜
         target_date = pd.Timestamp(f'{today}')
         rds_df[rds_df['date'] == target_date]
-
         rds_df['MA5'] = rds_df.groupby('stock_code')['closing_price'].transform(lambda x: x.rolling(window=5, min_periods=1).mean()).round(1)
         rds_df['MA20'] = rds_df.groupby('stock_code')['closing_price'].transform(lambda x: x.rolling(window=20, min_periods=1).mean()).round(1)
         rds_df['MA60'] = rds_df.groupby('stock_code')['closing_price'].transform(lambda x: x.rolling(window=60, min_periods=1).mean()).round(1)
@@ -153,6 +148,8 @@ def to_rds():
             ]
             cursor.executemany(update_sql, data)
             conn.commit()
+    except Exception as e:
+        logging.info(e)
 
 
 

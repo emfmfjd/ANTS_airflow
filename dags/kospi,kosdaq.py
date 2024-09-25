@@ -80,7 +80,6 @@ def get_data(**kwargs):
     file_path = f"/opt/airflow/stock_data/data/market_{today}.csv"
     file_exists = os.path.isfile(file_path)
 
-    df.to_csv(file_path, mode='a', index=False, header=not file_exists)
     df.to_sql('market', index=False, if_exists="append", con=engine)
     # time.sleep(9.5)
 
